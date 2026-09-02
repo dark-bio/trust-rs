@@ -1,4 +1,4 @@
-// trust-rs: roots of trust for the Dark Bio ecosystem
+// trust-rs: dark bio ecosystem roots of trust
 // Copyright 2026 Dark Bio AG. All rights reserved.
 
 //! Cloud attestations, the rotating signing and encryption identities of the
@@ -106,7 +106,9 @@ fn verify<T: Decode + Validity>(
     // Enforce the maximum cloud attestation validity
     let (nbf, exp) = claims.validity();
     if nbf >= exp || exp - nbf > CLOUD_ATTESTATION_MAX_VALIDITY.as_secs() {
-        return Err(Error::InvalidValidity { nbf, exp });
+        return Err(Error::InvalidValidity {
+            max: CLOUD_ATTESTATION_MAX_VALIDITY,
+        });
     }
     Ok(claims)
 }
@@ -307,7 +309,7 @@ mod tests {
                     match (accept, timely) {
                         (true, _) => result.expect("valid attestation rejected"),
                         (false, true) => assert!(
-                            matches!(result, Err(Error::InvalidValidity { nbf: n, exp: e }) if (n, e) == (nbf, exp)),
+                            matches!(result, Err(Error::InvalidValidity { max }) if max == CLOUD_ATTESTATION_MAX_VALIDITY),
                             "attestation accepted with validity {nbf} to {exp} at {now:?}"
                         ),
                         (false, false) => assert!(

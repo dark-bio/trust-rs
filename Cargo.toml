@@ -2,7 +2,7 @@
 name = "darkbio-trust"
 version = "0.1.0"
 authors = ["Péter Szilágyi <peter@dark.bio>"]
-description = "Roots of trust for the Dark Bio ecosystem"
+description = "Dark Bio ecosystem roots of trust"
 repository = "https://github.com/dark-bio/trust-rs"
 documentation = "https://docs.rs/darkbio-trust"
 categories = ["cryptography", "authentication"]

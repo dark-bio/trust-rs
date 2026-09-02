@@ -1,4 +1,4 @@
-// trust-rs: roots of trust for the Dark Bio ecosystem
+// trust-rs: dark bio ecosystem roots of trust
 // Copyright 2026 Dark Bio AG. All rights reserved.
 
 // Pull in the README as the package doc
@@ -20,6 +20,10 @@ pub const CRYPTO_DOMAIN_DEVICE_ATTESTATION: &[u8] = b"device-attestation-v1";
 /// root to the attestation format so it cannot be replayed into other protocols
 /// using the same key.
 pub const CRYPTO_DOMAIN_CLOUD_ATTESTATION: &[u8] = b"cloud-attestation-v1";
+
+/// Longest validity period an emulator attestation may carry, bounding how
+/// long an emulated device stays attested.
+pub const EMULATOR_ATTESTATION_MAX_VALIDITY: Duration = Duration::from_secs(3600 * 24 * 30);
 
 /// Longest validity period a cloud attestation may carry, forcing the cloud to
 /// rotate its keys and bounding how long a leaked cloud key stays attested.
@@ -49,10 +53,10 @@ pub enum Realm {
 pub enum Error {
     #[error("unexpected attestation signer {}", hex::encode(.0.to_bytes()))]
     UnexpectedSigner(xdsa::Fingerprint),
-    #[error("attestation is not self-signed by its embedded identity")]
+    #[error("attestation is not self-signed")]
     NotSelfSigned,
-    #[error("attestation validity {nbf} to {exp} is not a period of at most {} days", CLOUD_ATTESTATION_MAX_VALIDITY.as_secs() / 86400)]
-    InvalidValidity { nbf: u64, exp: u64 },
+    #[error("attestation validity exceeds allowed {} days", max.as_secs() / 86400)]
+    InvalidValidity { max: Duration },
     #[error("cwt: {0}")]
     Cwt(#[from] cwt::Error),
 }

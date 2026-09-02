@@ -1,4 +1,4 @@
-// trust-rs: roots of trust for the Dark Bio ecosystem
+// trust-rs: dark bio ecosystem roots of trust
 // Copyright 2026 Dark Bio AG. All rights reserved.
 
 //! Root keys of the Dark Bio ecosystem, embedded verbatim from the public keys

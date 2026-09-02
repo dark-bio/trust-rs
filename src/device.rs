@@ -1,10 +1,10 @@
-// trust-rs: roots of trust for the Dark Bio ecosystem
+// trust-rs: dark bio ecosystem roots of trust
 // Copyright 2026 Dark Bio AG. All rights reserved.
 
 //! Device attestations, the identities of Ark enclaves and of their emulated
 //! counterparts.
 
-use crate::{CRYPTO_DOMAIN_DEVICE_ATTESTATION, Error, Realm};
+use crate::{CRYPTO_DOMAIN_DEVICE_ATTESTATION, EMULATOR_ATTESTATION_MAX_VALIDITY, Error, Realm};
 use darkbio_crypto::cbor::Cbor;
 use darkbio_crypto::cwt::claims::{self, eat};
 use darkbio_crypto::{cwt, xdsa};
@@ -32,7 +32,8 @@ pub struct HardwareClaims {
 
 /// EmulatorClaims are the attestation claims of an emulated Ark, issued online
 /// by the cloud sandbox and signed by an emulator root. Emulator attestations
-/// always carry an expiration so emulated devices age out.
+/// always carry an expiration so emulated devices age out, their validity
+/// capped at EMULATOR_ATTESTATION_MAX_VALIDITY.
 #[derive(Cbor)]
 pub struct EmulatorClaims {
     #[cbor(embed)]
@@ -69,8 +70,9 @@ pub struct Device {
 /// Verifies a device attestation against the hardware and emulator roots, the
 /// set containing the attestation's signer deciding the shape the attestation
 /// must have. Hardware roots only accept attestations without an expiration,
-/// emulator roots only ones with. When `now` is given, the attestation's
-/// validity period is also enforced.
+/// emulator roots only ones with a validity period of at most
+/// EMULATOR_ATTESTATION_MAX_VALIDITY. When `now` is given, the attestation
+/// must also be valid at that time.
 pub fn verify(
     attestation: &[u8],
     hardware: &[xdsa::PublicKey],
@@ -97,10 +99,16 @@ pub fn verify(
         });
     }
     if let Some(root) = emulator.iter().find(|root| root.fingerprint() == signer) {
-        // Emulators must have an expiration claim
+        // Emulators must have an expiration claim, bounded by the maximum validity
         let claims: EmulatorClaims =
             cwt::verify(attestation, root, CRYPTO_DOMAIN_DEVICE_ATTESTATION, now)?;
 
+        let (nbf, exp) = (claims.nbf.nbf, claims.exp.exp);
+        if nbf >= exp || exp - nbf > EMULATOR_ATTESTATION_MAX_VALIDITY.as_secs() {
+            return Err(Error::InvalidValidity {
+                max: EMULATOR_ATTESTATION_MAX_VALIDITY,
+            });
+        }
         return Ok(Device {
             realm: Realm::Emulator,
             signer: claims.cnf.key().clone(),
@@ -175,15 +183,15 @@ mod tests {
         }
     }
 
-    /// Attestation claims of an emulated device, valid from time 1000 until 2000.
-    fn emulator_claims(identity: xdsa::PublicKey) -> EmulatorClaims {
+    /// Attestation claims of an emulated device, valid for the given period.
+    fn emulator_claims(identity: xdsa::PublicKey, nbf: u64, exp: u64) -> EmulatorClaims {
         EmulatorClaims {
             sub: claims::Subject {
                 sub: "emu-1234".into(),
             },
             cnf: claims::Confirm::new(identity),
-            nbf: claims::NotBefore { nbf: 1000 },
-            exp: claims::Expiration { exp: 2000 },
+            nbf: claims::NotBefore { nbf },
+            exp: claims::Expiration { exp },
             iat: claims::IssuedAt { iat: 1000 },
             oem: eat::Oemid::new_pen(65145),
             hwm: eat::HwModel {
@@ -227,7 +235,7 @@ mod tests {
         let root = xdsa::SecretKey::generate();
         let identity = xdsa::SecretKey::generate().public_key();
         let attestation = cwt::issue(
-            &emulator_claims(identity.clone()),
+            &emulator_claims(identity.clone(), 1000, 2000),
             &root,
             CRYPTO_DOMAIN_DEVICE_ATTESTATION,
         )
@@ -253,7 +261,7 @@ mod tests {
         let identity = xdsa::SecretKey::generate().public_key();
 
         let expiring = cwt::issue(
-            &emulator_claims(identity.clone()),
+            &emulator_claims(identity.clone(), 1000, 2000),
             &root,
             CRYPTO_DOMAIN_DEVICE_ATTESTATION,
         )
@@ -290,7 +298,7 @@ mod tests {
         let emulator = xdsa::SecretKey::generate();
         let identity = xdsa::SecretKey::generate().public_key();
         let attestation = cwt::issue(
-            &emulator_claims(identity),
+            &emulator_claims(identity, 1000, 2000),
             &emulator,
             CRYPTO_DOMAIN_DEVICE_ATTESTATION,
         )
@@ -340,7 +348,7 @@ mod tests {
             .expect("hardware attestation expired");
 
         let attestation = cwt::issue(
-            &emulator_claims(identity),
+            &emulator_claims(identity, 1000, 2000),
             &root,
             CRYPTO_DOMAIN_DEVICE_ATTESTATION,
         )
@@ -373,7 +381,7 @@ mod tests {
             )
             .unwrap(),
             cwt::issue(
-                &emulator_claims(identity.clone()),
+                &emulator_claims(identity.clone(), 1000, 2000),
                 &secret,
                 CRYPTO_DOMAIN_DEVICE_ATTESTATION,
             )
@@ -418,5 +426,49 @@ mod tests {
             matches!(verify_self_signed(b"junk"), Err(Error::Cwt(_))),
             "junk accepted as self-signed"
         );
+    }
+
+    // Tests that the length of an emulator attestation's validity period is
+    // capped whether or not a time is given, an empty or inverted period being
+    // rejected too, with the cap itself being the longest period accepted. The
+    // cap is checked after the time, so a period the time already fails is
+    // reported as such.
+    #[test]
+    fn test_emulator_validity_cap() {
+        let root = xdsa::SecretKey::generate();
+        let identity = xdsa::SecretKey::generate().public_key();
+        let max = EMULATOR_ATTESTATION_MAX_VALIDITY.as_secs();
+
+        for (nbf, exp, accept) in [
+            (1000, 1000 + max, true),
+            (1000, 1000 + max + 1, false),
+            (1000, 1000, false),
+            (2000, 1000, false),
+        ] {
+            let attestation = cwt::issue(
+                &emulator_claims(identity.clone(), nbf, exp),
+                &root,
+                CRYPTO_DOMAIN_DEVICE_ATTESTATION,
+            )
+            .unwrap();
+
+            for now in [None, Some(1500)] {
+                let timely = now.is_none_or(|now| nbf <= now && now < exp);
+                let result = verify(&attestation, &[], &[root.public_key()], now);
+                match (accept, timely) {
+                    (true, _) => {
+                        result.expect("valid attestation rejected");
+                    }
+                    (false, true) => assert!(
+                        matches!(result, Err(Error::InvalidValidity { max }) if max == EMULATOR_ATTESTATION_MAX_VALIDITY),
+                        "attestation accepted with validity {nbf} to {exp} at {now:?}"
+                    ),
+                    (false, false) => assert!(
+                        matches!(result, Err(Error::Cwt(_))),
+                        "untimely attestation not rejected by the time check at {now:?}"
+                    ),
+                }
+            }
+        }
     }
 }
