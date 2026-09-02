@@ -1,6 +1,6 @@
 [package]
 name = "darkbio-trust"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Péter Szilágyi <peter@dark.bio>"]
 description = "Dark Bio ecosystem roots of trust"
 repository = "https://github.com/dark-bio/trust-rs"
