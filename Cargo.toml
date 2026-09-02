@@ -1,0 +1,20 @@
+[package]
+name = "darkbio-trust"
+version = "0.1.0"
+authors = ["Péter Szilágyi <peter@dark.bio>"]
+description = "Roots of trust for the Dark Bio ecosystem"
+repository = "https://github.com/dark-bio/trust-rs"
+documentation = "https://docs.rs/darkbio-trust"
+categories = ["cryptography", "authentication"]
+keywords = ["ark", "attestation", "cwt", "trust"]
+license = "BSD-3-Clause"
+edition = "2024"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+darkbio-crypto = { version = "0.17.1", features = ["cwt"] }
+hex = "0.4"
+thiserror = "2.0"

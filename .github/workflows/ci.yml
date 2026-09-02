@@ -1,0 +1,63 @@
+name: tests
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  TRANSPARENCY_REPO_COMMIT: 595821ffbbbc1ce81a48904813bd452ac945b90a
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ ubuntu-latest, windows-latest, macOS-latest ]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build
+        run: cargo build --verbose
+
+      - name: Test
+        run: cargo test --verbose
+
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo clippy --all-features -- -D warnings
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: cargo doc --all-features --no-deps
+
+  roots:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Fetch the pinned transparency report
+        run: |
+          git init -q "$RUNNER_TEMP/transparency"
+          git -C "$RUNNER_TEMP/transparency" fetch -q --depth 1 https://github.com/dark-bio/transparency.git "$TRANSPARENCY_REPO_COMMIT"
+          git -C "$RUNNER_TEMP/transparency" checkout -q FETCH_HEAD
+
+      - name: Compare the embedded roots against the published keys
+        run: |
+          for key in roots/*.pub roots/internal/*.pub; do
+            cmp "$key" "$RUNNER_TEMP/transparency/keys/pubkeys/${key#roots/}" || exit 1
+          done
