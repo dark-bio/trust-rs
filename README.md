@@ -1,4 +1,4 @@
-# Dark Bio ecosystem roots of trust
+# Ecosystem Roots of Trust in Rust
 
 [![](https://img.shields.io/crates/v/darkbio-trust.svg)](https://crates.io/crates/darkbio-trust)
 [![](https://docs.rs/darkbio-trust/badge.svg)](https://docs.rs/darkbio-trust)
