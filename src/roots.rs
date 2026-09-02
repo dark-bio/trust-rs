@@ -2,7 +2,10 @@
 // Copyright 2026 Dark Bio AG. All rights reserved.
 
 //! Root keys of the Dark Bio ecosystem, embedded verbatim from the public keys
-//! of the Dark Bio transparency report repository.
+//! of the Dark Bio transparency report repository. Only the environments
+//! enabled by the crate features are embedded.
+
+#![cfg(any(feature = "release", feature = "staging", feature = "develop"))]
 
 use crate::Environment;
 use darkbio_crypto::xdsa;

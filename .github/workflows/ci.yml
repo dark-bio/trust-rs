@@ -28,10 +28,10 @@ jobs:
         run: cargo install cargo-hack
 
       - name: Build environment combinations
-        run: cargo hack build --feature-powerset --at-least-one-of release,staging,develop
+        run: cargo hack build --feature-powerset
 
       - name: Test environment combinations
-        run: cargo hack test --feature-powerset --at-least-one-of release,staging,develop
+        run: cargo hack test --feature-powerset
 
   format:
     runs-on: ubuntu-latest
@@ -44,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: cargo install cargo-hack
-      - run: cargo hack clippy --feature-powerset --at-least-one-of release,staging,develop --all-targets -- -D warnings
+      - run: cargo hack clippy --feature-powerset --all-targets -- -D warnings
 
   docs:
     runs-on: ubuntu-latest

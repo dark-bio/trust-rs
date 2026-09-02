@@ -8,9 +8,6 @@ pub mod cloud;
 pub mod device;
 pub mod roots;
 
-#[cfg(not(any(feature = "release", feature = "staging", feature = "develop")))]
-compile_error!("at least one environment feature must be enabled: release, staging or develop");
-
 use darkbio_crypto::{cwt, xdsa};
 use std::time::Duration;
 
