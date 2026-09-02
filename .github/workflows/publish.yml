@@ -5,7 +5,11 @@ on:
     tags: [ 'v*' ]
 
 jobs:
+  roots:
+    uses: ./.github/workflows/roots.yml
+
   publish:
+    needs: roots
     runs-on: ubuntu-latest
 
     permissions:

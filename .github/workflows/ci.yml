@@ -8,7 +8,6 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  TRANSPARENCY_REPO_COMMIT: 6ad051585e054b38adb9bc1888c41a8c2368ca69
 
 jobs:
   test:
@@ -53,18 +52,4 @@ jobs:
       - run: cargo doc --all-features --no-deps
 
   roots:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Fetch the pinned transparency report
-        run: |
-          git init -q "$RUNNER_TEMP/transparency"
-          git -C "$RUNNER_TEMP/transparency" fetch -q --depth 1 https://github.com/dark-bio/transparency.git "$TRANSPARENCY_REPO_COMMIT"
-          git -C "$RUNNER_TEMP/transparency" checkout -q FETCH_HEAD
-
-      - name: Compare the embedded roots against the published keys
-        run: |
-          for key in roots/*.pub roots/internal/*.pub; do
-            cmp "$key" "$RUNNER_TEMP/transparency/keys/pubkeys/${key#roots/}" || exit 1
-          done
+    uses: ./.github/workflows/roots.yml
