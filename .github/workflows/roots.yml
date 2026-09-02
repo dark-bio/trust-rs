@@ -20,6 +20,10 @@ jobs:
 
       - name: Compare the embedded roots against the published keys
         run: |
+          count=0
           for key in roots/*.pub roots/internal/*.pub; do
             cmp "$key" "$RUNNER_TEMP/transparency/keys/pubkeys/${key#roots/}" || exit 1
+            echo "verified $key against keys/pubkeys/${key#roots/}"
+            count=$((count + 1))
           done
+          echo "verified $count roots against transparency commit $TRANSPARENCY_REPO_COMMIT"
