@@ -8,6 +8,9 @@ pub mod cloud;
 pub mod device;
 pub mod roots;
 
+#[cfg(not(any(feature = "release", feature = "staging", feature = "develop")))]
+compile_error!("at least one environment feature must be enabled: release, staging or develop");
+
 use darkbio_crypto::{cwt, xdsa};
 use std::time::Duration;
 
@@ -30,11 +33,16 @@ pub const EMULATOR_ATTESTATION_MAX_VALIDITY: Duration = Duration::from_secs(3600
 pub const CLOUD_ATTESTATION_MAX_VALIDITY: Duration = Duration::from_secs(3600 * 24 * 90);
 
 /// Environment represents the deployments of the ecosystem, which devices are
-/// built for and clouds run in, each with its own roots.
+/// built for and clouds run in, each with its own roots. Every environment is
+/// gated behind a crate feature of the same name, so a build only ever embeds
+/// the roots of the environments it is meant to trust.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Environment {
+    #[cfg(feature = "release")]
     Release,
+    #[cfg(feature = "staging")]
     Staging,
+    #[cfg(feature = "develop")]
     Develop,
 }
 

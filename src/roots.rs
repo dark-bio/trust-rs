@@ -23,6 +23,7 @@ fn parse(pem: &str) -> xdsa::PublicKey {
 
 /// Roots of the release environment, the keys attesting devices manufactured for and
 /// the cloud serving actual users.
+#[cfg(feature = "release")]
 static RELEASE: LazyLock<Keyset> = LazyLock::new(|| Keyset {
     hardware: vec![
         parse(include_str!("../roots/deviceattest-ark1-alpha.xdsa.pub")),
@@ -37,6 +38,7 @@ static RELEASE: LazyLock<Keyset> = LazyLock::new(|| Keyset {
 
 /// Roots of the staging environment, the keys of the pre-release verification
 /// environment. Published for reference, nothing in production trusts them.
+#[cfg(feature = "staging")]
 static STAGING: LazyLock<Keyset> = LazyLock::new(|| Keyset {
     hardware: vec![parse(include_str!(
         "../roots/internal/deviceattest-ark1-staging.xdsa.pub"
@@ -51,6 +53,7 @@ static STAGING: LazyLock<Keyset> = LazyLock::new(|| Keyset {
 
 /// Roots of the develop environment, the keys of the development deployments.
 /// Published for reference, nothing in production trusts them.
+#[cfg(feature = "develop")]
 static DEVELOP: LazyLock<Keyset> = LazyLock::new(|| Keyset {
     hardware: vec![parse(include_str!(
         "../roots/internal/deviceattest-ark1-develop.xdsa.pub"
@@ -66,8 +69,11 @@ static DEVELOP: LazyLock<Keyset> = LazyLock::new(|| Keyset {
 /// Retrieves the roots of an environment.
 fn keyset(environment: Environment) -> &'static Keyset {
     match environment {
+        #[cfg(feature = "release")]
         Environment::Release => &RELEASE,
+        #[cfg(feature = "staging")]
         Environment::Staging => &STAGING,
+        #[cfg(feature = "develop")]
         Environment::Develop => &DEVELOP,
     }
 }
@@ -99,11 +105,7 @@ mod tests {
     // accidentally, and that the environments hold the expected number of roots.
     #[test]
     fn test_embedded_roots() {
-        for (environment, count) in [
-            (Environment::Release, 3),
-            (Environment::Staging, 1),
-            (Environment::Develop, 1),
-        ] {
+        fn check(environment: Environment, count: usize) {
             assert_eq!(
                 hardware(environment).len(),
                 count,
@@ -116,5 +118,11 @@ mod tests {
             );
             let _ = cloud(environment);
         }
+        #[cfg(feature = "release")]
+        check(Environment::Release, 3);
+        #[cfg(feature = "staging")]
+        check(Environment::Staging, 1);
+        #[cfg(feature = "develop")]
+        check(Environment::Develop, 1);
     }
 }
