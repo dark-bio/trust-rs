@@ -18,7 +18,7 @@ Devices and clouds belong to one of three environments: `release`, `staging` and
 
 ```toml
 [dependencies]
-darkbio-trust = { version = "0.4", features = ["release"] }
+darkbio-trust = { version = "0.5", features = ["release"] }
 ```
 
 Hardware and emulated Arks live in separate realms. Hardware devices are attested once at manufacturing by the device root of their series and never expire. Emulated devices are attested online by the emulator root and always expire. The two realms never share trust.
@@ -42,7 +42,7 @@ fn authenticate(attestation: &[u8], now: u64) -> Result<device::Device, darkbio_
 }
 ```
 
-The result carries the identity key of the device, its serial, manufacturer, model and hardware revision, the time of issuance and the validity period. An attestation only proves that a root vouched for the key. The transport still has to prove that the peer holds it.
+The result carries the identity key of the device, its serial, manufacturer, model and hardware revision, the time of issuance and, for emulated devices, the expiry. An attestation only proves that a root vouched for the key. The transport still has to prove that the peer holds it.
 
 A device that was never onboarded presents an attestation signed by its own identity key. `device::verify_self_signed` accepts such an attestation and returns nothing but that key. Whether to talk to such a device is up to the application.
 
