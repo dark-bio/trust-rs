@@ -6,9 +6,10 @@ description = "Dark Bio ecosystem roots of trust"
 repository = "https://github.com/dark-bio/trust-rs"
 documentation = "https://docs.rs/darkbio-trust"
 categories = ["cryptography", "authentication"]
-keywords = ["ark", "attestation", "cwt", "trust"]
+keywords = ["ark", "dark-bio", "attestation", "cwt"]
 license = "BSD-3-Clause"
 edition = "2024"
+rust-version = "1.88"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -21,6 +22,6 @@ staging = []
 develop = []
 
 [dependencies]
-darkbio-crypto = { version = "0.18.0", features = ["cwt", "rsa"] }
+darkbio-crypto = { version = "0.18.2", features = ["cwt", "rsa"] }
 hex = "0.4"
 thiserror = "2.0"

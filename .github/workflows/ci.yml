@@ -32,6 +32,21 @@ jobs:
       - name: Test environment combinations
         run: cargo hack test --feature-powerset
 
+  wasm:
+    name: Build on WASM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Add target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install cargo-hack
+        run: cargo install cargo-hack
+
+      - name: Build environment combinations
+        run: cargo hack build --feature-powerset --target wasm32-unknown-unknown
+
   format:
     runs-on: ubuntu-latest
     steps:
@@ -47,9 +62,22 @@ jobs:
 
   docs:
     runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v7
       - run: cargo doc --all-features --no-deps
+
+  semver:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the public API against the published release
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          feature-group: all-features
 
   roots:
     uses: ./.github/workflows/roots.yml

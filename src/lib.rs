@@ -3,10 +3,16 @@
 
 // Pull in the README as the package doc
 #![doc = include_str!("../README.md")]
+// The crate only composes the cryptography crate and never needs unsafe itself
+#![forbid(unsafe_code)]
 
 pub mod cloud;
 pub mod device;
 pub mod roots;
+
+/// The cryptography crate this one builds on, re-exported so consumers can
+/// name its types at the exact version this crate was compiled against.
+pub use darkbio_crypto as crypto;
 
 use darkbio_crypto::{cwt, xdsa};
 use std::fmt;
