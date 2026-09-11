@@ -9,6 +9,7 @@ categories = ["cryptography", "authentication"]
 keywords = ["ark", "attestation", "cwt", "trust"]
 license = "BSD-3-Clause"
 edition = "2024"
+rust-version = "1.88"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -21,6 +22,6 @@ staging = []
 develop = []
 
 [dependencies]
-darkbio-crypto = { version = "0.18.0", features = ["cwt", "rsa"] }
+darkbio-crypto = { version = "0.18.2", features = ["cwt", "rsa"] }
 hex = "0.4"
 thiserror = "2.0"
