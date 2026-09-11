@@ -240,10 +240,10 @@ impl fmt::Display for Role {
     }
 }
 
-/// RootInfo is a root of the ecosystem identified by its fingerprint, whether or
+/// Root is a root of the ecosystem identified by its fingerprint, whether or
 /// not this build embeds its key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct RootInfo {
+pub struct Root {
     /// Environment the root belongs to.
     pub env: Environment,
     /// What the root signs.
@@ -252,7 +252,7 @@ pub struct RootInfo {
     pub series: Option<&'static str>,
 }
 
-impl fmt::Display for RootInfo {
+impl fmt::Display for Root {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{} {}", self.env, self.role)?;
         if let Some(series) = self.series {
@@ -263,8 +263,8 @@ impl fmt::Display for RootInfo {
 }
 
 /// Builds a table entry.
-const fn known(environment: Environment, role: Role, series: Option<&'static str>) -> RootInfo {
-    RootInfo {
+const fn known(environment: Environment, role: Role, series: Option<&'static str>) -> Root {
+    Root {
         env: environment,
         role,
         series,
@@ -275,7 +275,7 @@ const fn known(environment: Environment, role: Role, series: Option<&'static str
 /// a signer can be named even when its key is not embedded. A fingerprint alone
 /// cannot verify anything. The tests check the table against the embedded keys,
 /// which the roots workflow checks against the transparency report in turn.
-const KNOWN: &[(&str, RootInfo)] = &[
+const KNOWN: &[(&str, Root)] = &[
     (
         "fe56b1de20bde6010569c90e611197356ad521c5e3d27f7afbbb65b5600bbb12",
         known(
@@ -404,7 +404,7 @@ const KNOWN: &[(&str, RootInfo)] = &[
 
 mod sealed {
     pub trait Fingerprint {
-        fn identify(&self) -> Option<super::RootInfo>;
+        fn identify(&self) -> Option<super::Root>;
     }
 }
 
@@ -417,24 +417,24 @@ impl Fingerprint for rsa::Fingerprint {}
 impl Fingerprint for xdsa::Fingerprint {}
 
 impl sealed::Fingerprint for rsa::Fingerprint {
-    fn identify(&self) -> Option<RootInfo> {
+    fn identify(&self) -> Option<Root> {
         identify_bytes(self.to_bytes(), true)
     }
 }
 
 impl sealed::Fingerprint for xdsa::Fingerprint {
-    fn identify(&self) -> Option<RootInfo> {
+    fn identify(&self) -> Option<Root> {
         identify_bytes(self.to_bytes(), false)
     }
 }
 
 /// Identifies an RSA or xDSA root without requiring its public key to be embedded.
 /// The caller must authenticate a token separately before trusting its signer.
-pub fn identify(fingerprint: &impl Fingerprint) -> Option<RootInfo> {
+pub fn identify(fingerprint: &impl Fingerprint) -> Option<Root> {
     fingerprint.identify()
 }
 
-fn identify_bytes(bytes: [u8; 32], rsa: bool) -> Option<RootInfo> {
+fn identify_bytes(bytes: [u8; 32], rsa: bool) -> Option<Root> {
     let encoded = hex::encode(bytes);
     KNOWN
         .iter()
@@ -516,7 +516,7 @@ mod tests {
     fn test_known_roots() {
         for &environment in EMBEDDED {
             for series in series(environment) {
-                let expected = |role| RootInfo {
+                let expected = |role| Root {
                     env: environment,
                     role,
                     series: Some(series.name),
@@ -572,13 +572,13 @@ mod tests {
         hex::decode_to_slice(encoded, &mut bytes).unwrap();
         match crate::Error::untrusted_signer(xdsa::Fingerprint::from_bytes(&bytes)) {
             crate::Error::UntrustedSigner {
-                known: Some(found), ..
+                root: Some(found), ..
             } => assert_eq!(found, expected),
             other => panic!("known root not named, got {other:?}"),
         }
         let stranger = xdsa::SecretKey::generate().public_key().fingerprint();
         assert!(
-            matches!(crate::Error::untrusted_signer(stranger), crate::Error::UntrustedSigner { fingerprint: found, known: None } if found == stranger),
+            matches!(crate::Error::untrusted_signer(stranger), crate::Error::UntrustedSigner { fingerprint: found, root: None } if found == stranger),
             "stranger named"
         );
     }

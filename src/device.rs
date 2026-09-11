@@ -38,7 +38,7 @@
 //! let device = device::verify(&attestation, &[root], &[], Some(1_700_000_100))?;
 //! assert_eq!(device.realm, Realm::Hardware);
 //! assert_eq!(device.serial, "ark-0001");
-//! # assert_eq!(device.identity_key.fingerprint(), identity.fingerprint());
+//! # assert_eq!(device.identity.fingerprint(), identity.fingerprint());
 //! # Ok(())
 //! # }
 //! ```
@@ -115,13 +115,13 @@ pub struct EmulatorClaims {
 }
 
 /// Identity claims authenticated by a selected root. A peer must separately
-/// prove possession of `identity_key`, typically through the wire handshake.
+/// prove possession of `identity`, typically through the wire handshake.
 #[derive(Clone, Debug)]
 pub struct Device {
     /// Realm determined by the root set containing the signer.
     pub realm: Realm,
     /// Attested key to use for the peer's proof of possession.
-    pub identity_key: xdsa::PublicKey,
+    pub identity: xdsa::PublicKey,
     /// Device serial number from the subject claim.
     pub serial: String,
     /// Manufacturer identifier qualifying the hardware model.
@@ -130,11 +130,10 @@ pub struct Device {
     pub model: Vec<u8>,
     /// Hardware revision identifier.
     pub version: String,
-    /// Issuance timestamp in Unix seconds; distinct from the validity start.
+    /// Time of issuance, seconds since the Unix epoch.
     pub issued: u64,
-    /// Inclusive validity start in Unix seconds.
-    pub not_before: u64,
-    /// Exclusive expiration in Unix seconds; absent for hardware devices.
+    /// Time of expiry, seconds since the Unix epoch, absent for hardware
+    /// devices.
     pub expiry: Option<u64>,
 }
 
@@ -164,13 +163,12 @@ pub fn verify(
 
         return Ok(Device {
             realm: Realm::Hardware,
-            identity_key: claims.cnf.key().clone(),
+            identity: claims.cnf.key().clone(),
             serial: claims.sub.sub,
             oem: claims.oem,
             model: claims.hwm.hw_model,
             version: claims.hwv.version().to_string(),
             issued: claims.iat.iat,
-            not_before: claims.nbf.nbf,
             expiry: None,
         });
     }
@@ -186,13 +184,12 @@ pub fn verify(
         )?;
         return Ok(Device {
             realm: Realm::Emulator,
-            identity_key: claims.cnf.key().clone(),
+            identity: claims.cnf.key().clone(),
             serial: claims.sub.sub,
             oem: claims.oem,
             model: claims.hwm.hw_model,
             version: claims.hwv.version().to_string(),
             issued: claims.iat.iat,
-            not_before: claims.nbf.nbf,
             expiry: Some(claims.exp.exp),
         });
     }
@@ -297,7 +294,7 @@ mod tests {
         let device = verify(&attestation, &[root.public_key()], &[], Some(1500)).unwrap();
         assert_eq!(device.realm, Realm::Hardware, "realm mismatch");
         assert_eq!(
-            device.identity_key.fingerprint(),
+            device.identity.fingerprint(),
             identity.fingerprint(),
             "identity mismatch"
         );
@@ -324,7 +321,7 @@ mod tests {
         let device = verify(&attestation, &[], &[root.public_key()], Some(1500)).unwrap();
         assert_eq!(device.realm, Realm::Emulator, "realm mismatch");
         assert_eq!(
-            device.identity_key.fingerprint(),
+            device.identity.fingerprint(),
             identity.fingerprint(),
             "identity mismatch"
         );
@@ -396,7 +393,7 @@ mod tests {
         match verify(&attestation, &[hardware], &[], None) {
             Err(Error::UntrustedSigner {
                 fingerprint: signer,
-                known: None,
+                root: None,
             }) => {
                 assert_eq!(
                     signer,
@@ -561,10 +558,9 @@ mod tests {
         claims.nbf.nbf = 1400;
         let mut token = cwt::issue(&claims, &root, CRYPTO_DOMAIN_DEVICE_ATTESTATION).unwrap();
         let device = verify(&token, &roots, &[], None).unwrap();
-        assert_eq!(device.identity_key.fingerprint(), identity.fingerprint());
+        assert_eq!(device.identity.fingerprint(), identity.fingerprint());
         assert_eq!(device.issued, 1000);
         assert_eq!(device.oem.pen(), Some(65145));
-        assert_eq!(device.not_before, 1400);
         assert!(matches!(
             verify(&token, &roots, &[], Some(1399)),
             Err(Error::Cwt(cwt::Error::NotYetValid {
@@ -594,7 +590,6 @@ mod tests {
         .unwrap();
         let device = verify(&token, &[], &roots, None).unwrap();
         assert_eq!(device.realm, Realm::Emulator);
-        assert_eq!(device.not_before, 1000);
         assert_eq!(device.expiry, Some(1000 + max));
         verify(&token, &[], &roots, Some(1000)).unwrap();
         verify(&token, &[], &roots, Some(1000 + max - 1)).unwrap();
@@ -622,7 +617,7 @@ mod tests {
         )
         .unwrap();
         let claimed = xdsa::Fingerprint::from_bytes(&bytes);
-        let known = crate::roots::identify(&claimed).unwrap();
+        let claimed_root = crate::roots::identify(&claimed).unwrap();
         let fingerprint = attacker.fingerprint().to_bytes();
         let offsets: Vec<_> = token
             .windows(32)
@@ -634,13 +629,10 @@ mod tests {
         token[offsets[0]..offsets[0] + 32].copy_from_slice(&claimed.to_bytes());
         let err = verify(&token, &[], &[], None).unwrap_err();
         assert!(
-            matches!(&err, Error::UntrustedSigner { fingerprint, known: Some(info) } if *fingerprint == claimed && *info == known)
+            matches!(&err, Error::UntrustedSigner { fingerprint, root: Some(info) } if *fingerprint == claimed && *info == claimed_root)
         );
-        assert!(
-            err.to_string()
-                .starts_with("attestation names untrusted signer")
-        );
-        let roots = crate::roots::hardware(known.env);
+        assert!(err.to_string().starts_with("attestation signed by the "));
+        let roots = crate::roots::hardware(claimed_root.env);
         if !roots.is_empty() {
             assert!(matches!(
                 verify(&token, roots, &[], None),

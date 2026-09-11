@@ -78,12 +78,12 @@ pub enum Realm {
 pub enum Error {
     /// The token names a signer outside the selected roots. This identifier
     /// and its optional root metadata have not been authenticated.
-    #[error("attestation names untrusted signer {}", describe_signer(.fingerprint, .known))]
+    #[error("attestation signed by {}, which is not among the trusted roots", describe_signer(.fingerprint, .root))]
     UntrustedSigner {
         /// Fingerprint of the signer, taken from the unverified header.
         fingerprint: xdsa::Fingerprint,
         /// Published root metadata matching the claimed signer fingerprint.
-        known: Option<roots::RootInfo>,
+        root: Option<roots::Root>,
     },
     /// The claimed self-signer differs from the embedded identity key.
     #[error("attestation is not self-signed")]
@@ -108,17 +108,17 @@ fn check_validity(nbf: u64, exp: u64, max: Duration) -> Result<(), Error> {
     Ok(())
 }
 
-fn describe_signer(fingerprint: &xdsa::Fingerprint, known: &Option<roots::RootInfo>) -> String {
-    match known {
-        Some(info) => format!("{info} ({})", hex::encode(fingerprint.to_bytes())),
-        None => hex::encode(fingerprint.to_bytes()),
+fn describe_signer(fingerprint: &xdsa::Fingerprint, root: &Option<roots::Root>) -> String {
+    match root {
+        Some(info) => format!("the {info} ({})", hex::encode(fingerprint.to_bytes())),
+        None => format!("unknown key {}", hex::encode(fingerprint.to_bytes())),
     }
 }
 
 impl Error {
     pub(crate) fn untrusted_signer(fingerprint: xdsa::Fingerprint) -> Self {
         Self::UntrustedSigner {
-            known: roots::identify(&fingerprint),
+            root: roots::identify(&fingerprint),
             fingerprint,
         }
     }
