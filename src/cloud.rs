@@ -3,8 +3,45 @@
 
 //! Cloud attestations, the rotating signing and encryption identities of the
 //! Dark Bio cloud.
+//!
+//! The cloud root of an environment attests the cloud's current signing and
+//! encryption keys. Each attestation has a validity period of at most
+//! [`CLOUD_ATTESTATION_MAX_VALIDITY`]. Verification takes the root the caller
+//! trusts and returns the attested claims.
+//!
+//! Verify a signing-key attestation against a trusted cloud root:
+//!
+//! ```
+//! # use darkbio_crypto::cwt::{self, claims};
+//! # use darkbio_crypto::xdsa;
+//! use darkbio_trust::cloud;
+//! # use darkbio_trust::CRYPTO_DOMAIN_CLOUD_ATTESTATION;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # // Stand-ins for a cloud root and the signing key it attests
+//! # let root = xdsa::SecretKey::generate();
+//! # let signing = xdsa::SecretKey::generate();
+//! #
+//! # let claims = cloud::SignerClaims {
+//! #     iss: claims::Issuer { iss: "https://dark.bio".into() },
+//! #     sub: claims::Subject { sub: "https://api.dark.bio".into() },
+//! #     nbf: claims::NotBefore { nbf: 1_700_000_000 },
+//! #     exp: claims::Expiration { exp: 1_700_000_000 + 30 * 86_400 },
+//! #     cnf: claims::Confirm::new(signing.public_key()),
+//! # };
+//! # let attestation = cwt::issue(&claims, &root, CRYPTO_DOMAIN_CLOUD_ATTESTATION)?;
+//! # let root = root.public_key();
+//!
+//! let verified = cloud::verify_signer(&attestation, &root, Some(1_700_000_100))?;
+//! assert_eq!(verified.sub.sub, "https://api.dark.bio");
+//! # assert_eq!(verified.cnf.key().fingerprint(), signing.fingerprint());
+//! # Ok(())
+//! # }
+//! ```
 
-use crate::{CLOUD_ATTESTATION_MAX_VALIDITY, CRYPTO_DOMAIN_CLOUD_ATTESTATION, Error};
+use crate::{
+    CLOUD_ATTESTATION_MAX_VALIDITY, CRYPTO_DOMAIN_CLOUD_ATTESTATION, Error, check_validity,
+};
 use darkbio_crypto::cbor::{Cbor, Decode};
 use darkbio_crypto::cwt::claims;
 use darkbio_crypto::{cwt, xdsa, xhpke};
@@ -15,16 +52,22 @@ use darkbio_crypto::{cwt, xdsa, xhpke};
 /// capped at CLOUD_ATTESTATION_MAX_VALIDITY.
 #[derive(Cbor)]
 pub struct SignerClaims {
+    /// Operator of the cloud, as a URL such as `https://dark.bio`.
     #[cbor(embed)]
-    pub iss: claims::Issuer, // Operator URL of the cloud (e.g. https://dark.bio)
+    pub iss: claims::Issuer,
+    /// API endpoint the key serves, as a URL such as `https://api.dark.bio`.
     #[cbor(embed)]
-    pub sub: claims::Subject, // API endpoint URL the key serves (e.g. https://api.dark.bio)
+    pub sub: claims::Subject,
+    /// Start of the key's validity, seconds since the Unix epoch.
     #[cbor(embed)]
-    pub nbf: claims::NotBefore, // Validity start
+    pub nbf: claims::NotBefore,
+    /// End of the key's validity, seconds since the Unix epoch, at most
+    /// [`CLOUD_ATTESTATION_MAX_VALIDITY`] after the start.
     #[cbor(embed)]
-    pub exp: claims::Expiration, // Validity end
+    pub exp: claims::Expiration,
+    /// xDSA key the cloud signs with while the attestation is valid.
     #[cbor(embed)]
-    pub cnf: claims::Confirm<xdsa::PublicKey>, // Cloud xDSA signing public key
+    pub cnf: claims::Confirm<xdsa::PublicKey>,
 }
 
 /// CryptoClaims are the attestation claims of the cloud's currently active
@@ -33,31 +76,38 @@ pub struct SignerClaims {
 /// capped at CLOUD_ATTESTATION_MAX_VALIDITY.
 #[derive(Cbor)]
 pub struct CryptoClaims {
+    /// Operator of the cloud, as a URL such as `https://dark.bio`.
     #[cbor(embed)]
-    pub iss: claims::Issuer, // Operator URL of the cloud (e.g. https://dark.bio)
+    pub iss: claims::Issuer,
+    /// API endpoint the key serves, as a URL such as `https://api.dark.bio`.
     #[cbor(embed)]
-    pub sub: claims::Subject, // API endpoint URL the key serves (e.g. https://api.dark.bio)
+    pub sub: claims::Subject,
+    /// Start of the key's validity, seconds since the Unix epoch.
     #[cbor(embed)]
-    pub nbf: claims::NotBefore, // Validity start
+    pub nbf: claims::NotBefore,
+    /// End of the key's validity, seconds since the Unix epoch, at most
+    /// [`CLOUD_ATTESTATION_MAX_VALIDITY`] after the start.
     #[cbor(embed)]
-    pub exp: claims::Expiration, // Validity end
+    pub exp: claims::Expiration,
+    /// xHPKE key the cloud receives encrypted messages with while the
+    /// attestation is valid.
     #[cbor(embed)]
-    pub cnf: claims::Confirm<xhpke::PublicKey>, // Cloud xHPKE encryption public key
+    pub cnf: claims::Confirm<xhpke::PublicKey>,
 }
 
-/// Validity is the validity period carried by every cloud attestation shape.
-trait Validity {
+/// Validity period carried by either cloud attestation shape.
+trait CloudClaims {
     /// Validity period of the attestation as its start and end timestamps.
     fn validity(&self) -> (u64, u64);
 }
 
-impl Validity for SignerClaims {
+impl CloudClaims for SignerClaims {
     fn validity(&self) -> (u64, u64) {
         (self.nbf.nbf, self.exp.exp)
     }
 }
 
-impl Validity for CryptoClaims {
+impl CloudClaims for CryptoClaims {
     fn validity(&self) -> (u64, u64) {
         (self.nbf.nbf, self.exp.exp)
     }
@@ -86,11 +136,11 @@ pub fn verify_crypto(
 }
 
 /// Verifies a cloud attestation of the given shape against a cloud root. The
-/// signer is matched to the root before the signature is checked, so a foreign
-/// root is reported as unexpected rather than as a bad signature. The length of
-/// the validity period is capped independently of `now`, so the cap holds even
-/// for verifiers without a trusted clock.
-fn verify<T: Decode + Validity>(
+/// claimed signer is matched to the root before the signature is checked;
+/// a mismatch yields an unauthenticated hint.
+/// The length of the validity period is capped independently of `now`, so the
+/// cap holds even for verifiers without a trusted clock.
+fn verify<T: Decode + CloudClaims>(
     attestation: &[u8],
     root: &xdsa::PublicKey,
     now: Option<u64>,
@@ -98,18 +148,14 @@ fn verify<T: Decode + Validity>(
     // Peek at the embedded signer and reject if not what we expect
     let signer = cwt::signer(attestation)?;
     if signer != root.fingerprint() {
-        return Err(Error::UnexpectedSigner(signer));
+        return Err(Error::untrusted_signer(signer));
     }
     // Verify the signature and unpack the claims
     let claims: T = cwt::verify(attestation, root, CRYPTO_DOMAIN_CLOUD_ATTESTATION, now)?;
 
     // Enforce the maximum cloud attestation validity
     let (nbf, exp) = claims.validity();
-    if nbf >= exp || exp - nbf > CLOUD_ATTESTATION_MAX_VALIDITY.as_secs() {
-        return Err(Error::InvalidValidity {
-            max: CLOUD_ATTESTATION_MAX_VALIDITY,
-        });
-    }
+    check_validity(nbf, exp, CLOUD_ATTESTATION_MAX_VALIDITY)?;
     Ok(claims)
 }
 
@@ -196,14 +242,14 @@ mod tests {
         assert!(
             matches!(
                 verify_signer(&signer, &other, None),
-                Err(Error::UnexpectedSigner(_))
+                Err(Error::UntrustedSigner { .. })
             ),
             "signer attestation accepted under a foreign root"
         );
         assert!(
             matches!(
                 verify_crypto(&crypto, &other, None),
-                Err(Error::UnexpectedSigner(_))
+                Err(Error::UntrustedSigner { .. })
             ),
             "crypto attestation accepted under a foreign root"
         );
@@ -320,5 +366,77 @@ mod tests {
                 }
             }
         }
+    }
+
+    // Verification returns both keys and the claims callers use to identify
+    // the operator and endpoint, with clock checks applied when requested.
+    #[test]
+    fn test_cloud_claims() {
+        let root = xdsa::SecretKey::generate();
+        let root_key = root.public_key();
+        let signing = xdsa::SecretKey::generate().public_key();
+        let encryption = xhpke::SecretKey::generate().public_key();
+        let signer = cwt::issue(
+            &signer_claims(signing.clone(), 1000, 2000),
+            &root,
+            CRYPTO_DOMAIN_CLOUD_ATTESTATION,
+        )
+        .unwrap();
+        let crypto = cwt::issue(
+            &crypto_claims(encryption.clone(), 1000, 2000),
+            &root,
+            CRYPTO_DOMAIN_CLOUD_ATTESTATION,
+        )
+        .unwrap();
+        let found = verify_signer(&signer, &root_key, None).unwrap();
+        assert_eq!(found.cnf.key().fingerprint(), signing.fingerprint());
+        assert_eq!(found.iss.iss, "https://dark.bio");
+        assert_eq!(found.sub.sub, "https://api.dark.bio");
+        let found = verify_crypto(&crypto, &root_key, None).unwrap();
+        assert_eq!(found.cnf.key().fingerprint(), encryption.fingerprint());
+        assert_eq!(found.iss.iss, "https://dark.bio");
+        assert_eq!(found.sub.sub, "https://api.dark.bio");
+        for now in [1000, 1999] {
+            verify_signer(&signer, &root_key, Some(now)).unwrap();
+            verify_crypto(&crypto, &root_key, Some(now)).unwrap();
+        }
+        for now in [999, 2000] {
+            let results = [
+                verify_signer(&signer, &root_key, Some(now)).map(|_| ()),
+                verify_crypto(&crypto, &root_key, Some(now)).map(|_| ()),
+            ];
+            for result in results {
+                match now {
+                    999 => assert!(matches!(
+                        result,
+                        Err(Error::Cwt(cwt::Error::NotYetValid { .. }))
+                    )),
+                    2000 => assert!(matches!(
+                        result,
+                        Err(Error::Cwt(cwt::Error::AlreadyExpired { .. }))
+                    )),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_cloud_validity_at_timestamp_limit() {
+        let root = xdsa::SecretKey::generate();
+        let signing = xdsa::SecretKey::generate().public_key();
+        let max = CLOUD_ATTESTATION_MAX_VALIDITY.as_secs();
+        let root_key = root.public_key();
+        let token = cwt::issue(
+            &signer_claims(signing, u64::MAX - max, u64::MAX),
+            &root,
+            CRYPTO_DOMAIN_CLOUD_ATTESTATION,
+        )
+        .unwrap();
+        super::verify_signer(&token, &root_key, Some(u64::MAX - 1)).unwrap();
+        assert!(matches!(
+            super::verify_signer(&token, &root_key, Some(u64::MAX)),
+            Err(Error::Cwt(cwt::Error::AlreadyExpired { .. }))
+        ));
     }
 }

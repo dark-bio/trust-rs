@@ -3,8 +3,50 @@
 
 //! Device attestations, the identities of Ark enclaves and of their emulated
 //! counterparts.
+//!
+//! An attestation is a CWT signed by a root, binding the identity key of a
+//! device to its serial and hardware details. Hardware devices are attested
+//! once at manufacturing and never expire, emulated devices are attested
+//! online with an expiry. Verification takes the roots the caller trusts, and
+//! the set the signer belongs to decides which shape the claims must have.
+//!
+//! Verify an attestation against a trusted hardware root:
+//!
+//! ```
+//! # use darkbio_crypto::cwt::{self, claims, claims::eat};
+//! # use darkbio_crypto::xdsa;
+//! use darkbio_trust::{Realm, device};
+//! # use darkbio_trust::CRYPTO_DOMAIN_DEVICE_ATTESTATION;
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! # // Stand-ins for a manufacturing root and a device identity
+//! # let root = xdsa::SecretKey::generate();
+//! # let identity = xdsa::SecretKey::generate();
+//! #
+//! # let claims = device::HardwareClaims {
+//! #     sub: claims::Subject { sub: "ark-0001".into() },
+//! #     cnf: claims::Confirm::new(identity.public_key()),
+//! #     nbf: claims::NotBefore { nbf: 1_700_000_000 },
+//! #     iat: claims::IssuedAt { iat: 1_700_000_000 },
+//! #     oem: eat::Oemid::new_pen(65145),
+//! #     hwm: eat::HwModel { hw_model: b"Ark I".to_vec() },
+//! #     hwv: eat::HwVersion::new("1.0.0".into()),
+//! # };
+//! # let attestation = cwt::issue(&claims, &root, CRYPTO_DOMAIN_DEVICE_ATTESTATION)?;
+//! # let root = root.public_key();
+//!
+//! let device = device::verify(&attestation, &[root], &[], Some(1_700_000_100))?;
+//! assert_eq!(device.realm, Realm::Hardware);
+//! assert_eq!(device.serial, "ark-0001");
+//! # assert_eq!(device.identity_key.fingerprint(), identity.fingerprint());
+//! # Ok(())
+//! # }
+//! ```
 
-use crate::{CRYPTO_DOMAIN_DEVICE_ATTESTATION, EMULATOR_ATTESTATION_MAX_VALIDITY, Error, Realm};
+use crate::{
+    CRYPTO_DOMAIN_DEVICE_ATTESTATION, EMULATOR_ATTESTATION_MAX_VALIDITY, Error, Realm,
+    check_validity,
+};
 use darkbio_crypto::cbor::Cbor;
 use darkbio_crypto::cwt::claims::{self, eat};
 use darkbio_crypto::{cwt, xdsa};
@@ -14,20 +56,28 @@ use darkbio_crypto::{cwt, xdsa};
 /// expiration, the identity being bound to the hardware for its lifetime.
 #[derive(Cbor)]
 pub struct HardwareClaims {
+    /// Serial number of the device.
     #[cbor(embed)]
-    pub sub: claims::Subject, // Device serial number
+    pub sub: claims::Subject,
+    /// xDSA identity key of the device, which the transport must prove the
+    /// peer holds.
     #[cbor(embed)]
-    pub cnf: claims::Confirm<xdsa::PublicKey>, // Device xDSA identity public key
+    pub cnf: claims::Confirm<xdsa::PublicKey>,
+    /// Start of validity, seconds since the Unix epoch.
     #[cbor(embed)]
-    pub nbf: claims::NotBefore, // Issuance validity start
+    pub nbf: claims::NotBefore,
+    /// Time of issuance, seconds since the Unix epoch.
     #[cbor(embed)]
-    pub iat: claims::IssuedAt, // Issuance timestamp
+    pub iat: claims::IssuedAt,
+    /// Manufacturer of the device.
     #[cbor(embed)]
-    pub oem: eat::Oemid, // OEM identifier
+    pub oem: eat::Oemid,
+    /// Hardware model of the device.
     #[cbor(embed)]
-    pub hwm: eat::HwModel, // Hardware model
+    pub hwm: eat::HwModel,
+    /// Hardware revision of the device.
     #[cbor(embed)]
-    pub hwv: eat::HwVersion, // Hardware version
+    pub hwv: eat::HwVersion,
 }
 
 /// EmulatorClaims are the attestation claims of an emulated Ark, issued online
@@ -36,43 +86,67 @@ pub struct HardwareClaims {
 /// capped at EMULATOR_ATTESTATION_MAX_VALIDITY.
 #[derive(Cbor)]
 pub struct EmulatorClaims {
+    /// Serial number of the emulated device.
     #[cbor(embed)]
-    pub sub: claims::Subject, // Device serial number
+    pub sub: claims::Subject,
+    /// xDSA identity key of the emulated device, which the transport must
+    /// prove the peer holds.
     #[cbor(embed)]
-    pub cnf: claims::Confirm<xdsa::PublicKey>, // Device xDSA identity public key
+    pub cnf: claims::Confirm<xdsa::PublicKey>,
+    /// Start of validity, seconds since the Unix epoch.
     #[cbor(embed)]
-    pub nbf: claims::NotBefore, // Issuance validity start
+    pub nbf: claims::NotBefore,
+    /// End of validity, seconds since the Unix epoch, at most
+    /// [`EMULATOR_ATTESTATION_MAX_VALIDITY`] after the start.
     #[cbor(embed)]
-    pub exp: claims::Expiration, // Registration validity end
+    pub exp: claims::Expiration,
+    /// Time of issuance, seconds since the Unix epoch.
     #[cbor(embed)]
-    pub iat: claims::IssuedAt, // Issuance timestamp
+    pub iat: claims::IssuedAt,
+    /// Manufacturer of the emulated device.
     #[cbor(embed)]
-    pub oem: eat::Oemid, // OEM identifier
+    pub oem: eat::Oemid,
+    /// Hardware model of the emulated device.
     #[cbor(embed)]
-    pub hwm: eat::HwModel, // Hardware model
+    pub hwm: eat::HwModel,
+    /// Hardware revision of the emulated device.
     #[cbor(embed)]
-    pub hwv: eat::HwVersion, // Hardware version
+    pub hwv: eat::HwVersion,
 }
 
-/// Device is the verified identity of an Ark, as attested by the root that
-/// signed it.
+/// Identity claims authenticated by a selected root. A peer must separately
+/// prove possession of `identity_key`, typically through the wire handshake.
 #[derive(Clone, Debug)]
 pub struct Device {
-    pub realm: Realm,            // Realm of the root that signed the attestation
-    pub signer: xdsa::PublicKey, // Identity public key of the device
-    pub serial: String,          // Serial number of the device
-    pub model: Vec<u8>,          // Hardware model identifier
-    pub version: String,         // Hardware version
-    pub issued: u64,             // Unix timestamp of the attestation's issuance
-    pub expiry: Option<u64>, // Unix timestamp of the attestation's expiry, emulated devices only
+    /// Realm determined by the root set containing the signer.
+    pub realm: Realm,
+    /// Attested key to use for the peer's proof of possession.
+    pub identity_key: xdsa::PublicKey,
+    /// Device serial number from the subject claim.
+    pub serial: String,
+    /// Manufacturer identifier qualifying the hardware model.
+    pub oem: eat::Oemid,
+    /// Hardware model identifier in the manufacturer's namespace.
+    pub model: Vec<u8>,
+    /// Hardware revision identifier.
+    pub version: String,
+    /// Issuance timestamp in Unix seconds; distinct from the validity start.
+    pub issued: u64,
+    /// Inclusive validity start in Unix seconds.
+    pub not_before: u64,
+    /// Exclusive expiration in Unix seconds; absent for hardware devices.
+    pub expiry: Option<u64>,
 }
 
-/// Verifies a device attestation against the hardware and emulator roots, the
-/// set containing the attestation's signer deciding the shape the attestation
-/// must have. Hardware roots only accept attestations without an expiration,
-/// emulator roots only ones with a validity period of at most
-/// EMULATOR_ATTESTATION_MAX_VALIDITY. When `now` is given, the attestation
-/// must also be valid at that time.
+/// Verifies a device attestation against the supplied hardware and emulator
+/// roots. The set containing its signer determines the accepted claim shape.
+/// Hardware attestations have no expiration; emulator lifetimes are capped at
+/// [`EMULATOR_ATTESTATION_MAX_VALIDITY`], even without a trusted clock.
+///
+/// When `now` is given, the attestation must also be valid at that Unix time.
+/// Callers supplying their own keys must place them in the correct, disjoint
+/// root sets.
+/// A signer outside both sets yields an unauthenticated [`Error::UntrustedSigner`] hint.
 pub fn verify(
     attestation: &[u8],
     hardware: &[xdsa::PublicKey],
@@ -90,11 +164,13 @@ pub fn verify(
 
         return Ok(Device {
             realm: Realm::Hardware,
-            signer: claims.cnf.key().clone(),
+            identity_key: claims.cnf.key().clone(),
             serial: claims.sub.sub,
+            oem: claims.oem,
             model: claims.hwm.hw_model,
             version: claims.hwv.version().to_string(),
             issued: claims.iat.iat,
+            not_before: claims.nbf.nbf,
             expiry: None,
         });
     }
@@ -103,29 +179,33 @@ pub fn verify(
         let claims: EmulatorClaims =
             cwt::verify(attestation, root, CRYPTO_DOMAIN_DEVICE_ATTESTATION, now)?;
 
-        let (nbf, exp) = (claims.nbf.nbf, claims.exp.exp);
-        if nbf >= exp || exp - nbf > EMULATOR_ATTESTATION_MAX_VALIDITY.as_secs() {
-            return Err(Error::InvalidValidity {
-                max: EMULATOR_ATTESTATION_MAX_VALIDITY,
-            });
-        }
+        check_validity(
+            claims.nbf.nbf,
+            claims.exp.exp,
+            EMULATOR_ATTESTATION_MAX_VALIDITY,
+        )?;
         return Ok(Device {
             realm: Realm::Emulator,
-            signer: claims.cnf.key().clone(),
+            identity_key: claims.cnf.key().clone(),
             serial: claims.sub.sub,
+            oem: claims.oem,
             model: claims.hwm.hw_model,
             version: claims.hwv.version().to_string(),
             issued: claims.iat.iat,
+            not_before: claims.nbf.nbf,
             expiry: Some(claims.exp.exp),
         });
     }
-    Err(Error::UnexpectedSigner(signer))
+    Err(Error::untrusted_signer(signer))
 }
 
-/// Verifies the self-signed attestation of a device that was never onboarded,
-/// which the device issues under its own identity key. Such an attestation
-/// vouches for nothing beyond the device holding that key, so only the key is
-/// returned and none of the claims.
+/// Verifies a token's signature under its embedded identity key. Only that key
+/// is returned; the self-asserted identity claims confer no provisioning trust.
+///
+/// This does not establish whether a device has ever been onboarded or whether
+/// the current presenter holds the private key. A copied token also verifies;
+/// a live handshake or challenge must establish possession separately. Validity
+/// timestamps are ignored, since self-asserted lifetimes confer no authority.
 pub fn verify_self_signed(attestation: &[u8]) -> Result<xdsa::PublicKey, Error> {
     // Figure out the realm based on attestation shape
     let (identity, hardware) = match cwt::peek::<HardwareClaims>(attestation) {
@@ -217,7 +297,7 @@ mod tests {
         let device = verify(&attestation, &[root.public_key()], &[], Some(1500)).unwrap();
         assert_eq!(device.realm, Realm::Hardware, "realm mismatch");
         assert_eq!(
-            device.signer.fingerprint(),
+            device.identity_key.fingerprint(),
             identity.fingerprint(),
             "identity mismatch"
         );
@@ -244,7 +324,7 @@ mod tests {
         let device = verify(&attestation, &[], &[root.public_key()], Some(1500)).unwrap();
         assert_eq!(device.realm, Realm::Emulator, "realm mismatch");
         assert_eq!(
-            device.signer.fingerprint(),
+            device.identity_key.fingerprint(),
             identity.fingerprint(),
             "identity mismatch"
         );
@@ -314,7 +394,10 @@ mod tests {
         assert_eq!(device.realm, Realm::Emulator, "realm mismatch");
 
         match verify(&attestation, &[hardware], &[], None) {
-            Err(Error::UnexpectedSigner(signer)) => {
+            Err(Error::UntrustedSigner {
+                fingerprint: signer,
+                known: None,
+            }) => {
                 assert_eq!(
                     signer,
                     emulator.public_key().fingerprint(),
@@ -394,13 +477,8 @@ mod tests {
             );
             assert!(
                 matches!(
-                    verify(
-                        &attestation,
-                        std::slice::from_ref(&root),
-                        std::slice::from_ref(&root),
-                        None
-                    ),
-                    Err(Error::UnexpectedSigner(_))
+                    verify(&attestation, std::slice::from_ref(&root), &[], None),
+                    Err(Error::UntrustedSigner { .. })
                 ),
                 "self-signed attestation accepted as attested"
             );
@@ -469,6 +547,105 @@ mod tests {
                     ),
                 }
             }
+        }
+    }
+
+    // Verification returns the device fields and applies the clock through cwt
+    // when requested, while always authenticating the signature.
+    #[test]
+    fn test_hardware_fields() {
+        let root = xdsa::SecretKey::generate();
+        let roots = [root.public_key()];
+        let identity = xdsa::SecretKey::generate().public_key();
+        let mut claims = hardware_claims(identity.clone());
+        claims.nbf.nbf = 1400;
+        let mut token = cwt::issue(&claims, &root, CRYPTO_DOMAIN_DEVICE_ATTESTATION).unwrap();
+        let device = verify(&token, &roots, &[], None).unwrap();
+        assert_eq!(device.identity_key.fingerprint(), identity.fingerprint());
+        assert_eq!(device.issued, 1000);
+        assert_eq!(device.oem.pen(), Some(65145));
+        assert_eq!(device.not_before, 1400);
+        assert!(matches!(
+            verify(&token, &roots, &[], Some(1399)),
+            Err(Error::Cwt(cwt::Error::NotYetValid {
+                nbf: 1400,
+                now: 1399
+            }))
+        ));
+        verify(&token, &roots, &[], Some(1400)).unwrap();
+        *token.last_mut().unwrap() ^= 1;
+        assert!(matches!(
+            verify(&token, &roots, &[], None),
+            Err(Error::Cwt(_))
+        ));
+    }
+
+    #[test]
+    fn test_emulator_fields() {
+        let root = xdsa::SecretKey::generate();
+        let roots = [root.public_key()];
+        let identity = xdsa::SecretKey::generate().public_key();
+        let max = EMULATOR_ATTESTATION_MAX_VALIDITY.as_secs();
+        let token = cwt::issue(
+            &emulator_claims(identity, 1000, 1000 + max),
+            &root,
+            CRYPTO_DOMAIN_DEVICE_ATTESTATION,
+        )
+        .unwrap();
+        let device = verify(&token, &[], &roots, None).unwrap();
+        assert_eq!(device.realm, Realm::Emulator);
+        assert_eq!(device.not_before, 1000);
+        assert_eq!(device.expiry, Some(1000 + max));
+        verify(&token, &[], &roots, Some(1000)).unwrap();
+        verify(&token, &[], &roots, Some(1000 + max - 1)).unwrap();
+        assert!(matches!(
+            verify(&token, &[], &roots, Some(1000 + max)),
+            Err(Error::Cwt(cwt::Error::AlreadyExpired { .. }))
+        ));
+    }
+
+    // A forged header can name a known root. Its metadata is only a hint and
+    // never authenticates the token, even when the claimed key is embedded.
+    #[test]
+    fn test_unverified_signer_hint() {
+        let attacker = xdsa::SecretKey::generate();
+        let mut token = cwt::issue(
+            &hardware_claims(attacker.public_key()),
+            &attacker,
+            CRYPTO_DOMAIN_DEVICE_ATTESTATION,
+        )
+        .unwrap();
+        let mut bytes = [0; 32];
+        hex::decode_to_slice(
+            "fe56b1de20bde6010569c90e611197356ad521c5e3d27f7afbbb65b5600bbb12",
+            &mut bytes,
+        )
+        .unwrap();
+        let claimed = xdsa::Fingerprint::from_bytes(&bytes);
+        let known = crate::roots::identify(&claimed).unwrap();
+        let fingerprint = attacker.fingerprint().to_bytes();
+        let offsets: Vec<_> = token
+            .windows(32)
+            .enumerate()
+            .filter(|(_, bytes)| *bytes == fingerprint)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(offsets.len(), 1);
+        token[offsets[0]..offsets[0] + 32].copy_from_slice(&claimed.to_bytes());
+        let err = verify(&token, &[], &[], None).unwrap_err();
+        assert!(
+            matches!(&err, Error::UntrustedSigner { fingerprint, known: Some(info) } if *fingerprint == claimed && *info == known)
+        );
+        assert!(
+            err.to_string()
+                .starts_with("attestation names untrusted signer")
+        );
+        let roots = crate::roots::hardware(known.env);
+        if !roots.is_empty() {
+            assert!(matches!(
+                verify(&token, roots, &[], None),
+                Err(Error::Cwt(_))
+            ));
         }
     }
 }
