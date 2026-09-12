@@ -1,5 +1,8 @@
 // trust-rs: dark bio ecosystem roots of trust
 // Copyright 2026 Dark Bio AG. All rights reserved.
+//
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
 
 //! Device attestations, the identities of Ark enclaves and of their emulated
 //! counterparts.
