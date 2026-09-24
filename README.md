@@ -67,7 +67,7 @@ fn cloud_signer(attestation: &[u8], now: u64) -> Result<cloud::SignerClaims, Box
 
 ## Validity footnotes
 
-Verification always checks the signature, the domain and the shape of the claims. Emulator attestations may be valid for at most 30 days; cloud attestations for at most 90 days; hardware attestations never expire. With a time specified, the attestation must also be valid at that moment. Without one, the clock check is skipped.
+Verification always checks the signature, the domain and the shape of the claims. Emulator attestations may be valid for at most 30 days; cloud attestations for at most 90 days; hardware attestations never expire. With a time specified, the attestation must also be valid at that moment. Without one, the clock check is skipped. `device::verify_self_signed` ignores the timestamps altogether, since a self-asserted lifetime carries no authority.
 
 ## Naming a signer
 

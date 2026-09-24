@@ -165,6 +165,8 @@ fn verify<T: Decode + CloudClaims>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CRYPTO_DOMAIN_DEVICE_ATTESTATION;
+    use darkbio_crypto::cbor::Encode;
 
     /// Signer attestation claims of a cloud, valid for the given period.
     fn signer_claims(key: xdsa::PublicKey, nbf: u64, exp: u64) -> SignerClaims {
@@ -290,6 +292,39 @@ mod tests {
             ),
             "crypto attestation accepted as signer"
         );
+    }
+
+    // Tests that a cloud attestation is rejected when signed under another
+    // domain or with a corrupted signature, whichever key it attests.
+    #[test]
+    fn test_cloud_forged_signatures() {
+        // Signs the claims under the device attestation domain, and under the
+        // cloud one with a corrupted signature
+        fn forge(claims: &impl Encode, signer: &xdsa::SecretKey) -> [(&'static str, Vec<u8>); 2] {
+            let domain = cwt::issue(claims, signer, CRYPTO_DOMAIN_DEVICE_ATTESTATION).unwrap();
+            let mut signature =
+                cwt::issue(claims, signer, CRYPTO_DOMAIN_CLOUD_ATTESTATION).unwrap();
+            *signature.last_mut().unwrap() ^= 1;
+            [("domain", domain), ("signature", signature)]
+        }
+        let root = xdsa::SecretKey::generate();
+        let signing = xdsa::SecretKey::generate().public_key();
+        let encryption = xhpke::SecretKey::generate().public_key();
+
+        for (case, token) in forge(&signer_claims(signing, 1000, 2000), &root) {
+            let result = verify_signer(&token, &root.public_key(), None).map(|_| ());
+            assert!(
+                matches!(result, Err(Error::Cwt(cwt::Error::Cose(_)))),
+                "{case}: {result:?}"
+            );
+        }
+        for (case, token) in forge(&crypto_claims(encryption, 1000, 2000), &root) {
+            let result = verify_crypto(&token, &root.public_key(), None).map(|_| ());
+            assert!(
+                matches!(result, Err(Error::Cwt(cwt::Error::Cose(_)))),
+                "{case}: {result:?}"
+            );
+        }
     }
 
     // Tests that the validity period is enforced when a time is given.
