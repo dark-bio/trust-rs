@@ -19,7 +19,7 @@ Devices and clouds belong to one of three environments: `release`, `staging` and
 
 ```toml
 [dependencies]
-darkbio-trust = { version = "0.5", features = ["release"] }
+darkbio-trust = { version = "0.6", features = ["release"] }
 ```
 
 Hardware and emulated Arks live in separate realms. Hardware devices are attested once at manufacturing by the device root of their series and never expire. Emulated devices are attested online by the emulator root and always expire. The two realms never share trust.
