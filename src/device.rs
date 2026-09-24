@@ -50,7 +50,7 @@ use crate::{
     CRYPTO_DOMAIN_DEVICE_ATTESTATION, EMULATOR_ATTESTATION_MAX_VALIDITY, Error, Realm,
     check_validity,
 };
-use darkbio_crypto::cbor::Cbor;
+use darkbio_crypto::cbor::{self, Cbor, Decode};
 use darkbio_crypto::cwt::claims::{self, eat};
 use darkbio_crypto::{cwt, xdsa};
 
@@ -207,13 +207,12 @@ pub fn verify(
 /// a live handshake or challenge must establish possession separately. Validity
 /// timestamps are ignored, since self-asserted lifetimes confer no authority.
 pub fn verify_self_signed(attestation: &[u8]) -> Result<xdsa::PublicKey, Error> {
-    // Figure out the realm based on attestation shape
-    let (identity, hardware) = match cwt::peek::<HardwareClaims>(attestation) {
-        Ok(claims) => (claims.cnf.key().clone(), true),
-        Err(_) => {
-            let claims: EmulatorClaims = cwt::peek(attestation)?;
-            (claims.cnf.key().clone(), false)
-        }
+    // Figure out the realm from the expiration claim, which emulators must
+    // carry and hardware devices must not
+    let hardware = !has_expiration(attestation)?;
+    let identity = match hardware {
+        true => cwt::peek::<HardwareClaims>(attestation)?.cnf.key().clone(),
+        false => cwt::peek::<EmulatorClaims>(attestation)?.cnf.key().clone(),
     };
     // Ensure it's truly a self-signed attestation
     let signer = cwt::signer(attestation)?;
@@ -242,9 +241,25 @@ pub fn verify_self_signed(attestation: &[u8]) -> Result<xdsa::PublicKey, Error> 
     Ok(identity)
 }
 
+/// Reports whether the unverified claims of an attestation carry an expiration
+/// claim (key 4).
+fn has_expiration(attestation: &[u8]) -> Result<bool, cwt::Error> {
+    let claims: cbor::Raw = cwt::peek(attestation)?;
+    let mut decoder = cbor::Decoder::new(&claims.0);
+    for _ in 0..decoder.decode_map_header()? {
+        if decoder.decode_int()? == 4 {
+            return Ok(true);
+        }
+        cbor::Raw::decode_cbor_notrail(&mut decoder)?;
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CRYPTO_DOMAIN_CLOUD_ATTESTATION;
+    use darkbio_crypto::cbor::Encode;
 
     /// Attestation claims of a hardware device, valid from time 1000 onwards.
     fn hardware_claims(identity: xdsa::PublicKey) -> HardwareClaims {
@@ -504,6 +519,138 @@ mod tests {
             matches!(verify_self_signed(b"junk"), Err(Error::Cwt(_))),
             "junk accepted as self-signed"
         );
+    }
+
+    // Tests that a self-signed attestation is accepted whatever validity period
+    // it claims, since a self-asserted lifetime carries no authority.
+    #[test]
+    fn test_self_signed_ignores_validity() {
+        let secret = xdsa::SecretKey::generate();
+
+        for (nbf, exp) in [(2000, 1000), (0, u64::MAX)] {
+            let attestation = cwt::issue(
+                &emulator_claims(secret.public_key(), nbf, exp),
+                &secret,
+                CRYPTO_DOMAIN_DEVICE_ATTESTATION,
+            )
+            .unwrap();
+            let result = verify_self_signed(&attestation);
+            assert!(result.is_ok(), "{nbf} to {exp}: {result:?}");
+        }
+    }
+
+    // Tests that a malformed self-signed attestation is reported by the decoder
+    // of its own shape, which its expiration claim decides.
+    #[test]
+    fn test_self_signed_malformed() {
+        // Device claims missing the time of issuance, without and with an
+        // expiration
+        #[derive(Cbor)]
+        struct Permanent {
+            #[cbor(embed)]
+            sub: claims::Subject,
+            #[cbor(embed)]
+            cnf: claims::Confirm<xdsa::PublicKey>,
+            #[cbor(embed)]
+            nbf: claims::NotBefore,
+        }
+        #[derive(Cbor)]
+        struct Expiring {
+            #[cbor(embed)]
+            sub: claims::Subject,
+            #[cbor(embed)]
+            cnf: claims::Confirm<xdsa::PublicKey>,
+            #[cbor(embed)]
+            nbf: claims::NotBefore,
+            #[cbor(embed)]
+            exp: claims::Expiration,
+        }
+        let secret = xdsa::SecretKey::generate();
+
+        let permanent = Permanent {
+            sub: claims::Subject {
+                sub: "ark-1234".into(),
+            },
+            cnf: claims::Confirm::new(secret.public_key()),
+            nbf: claims::NotBefore { nbf: 1000 },
+        };
+        let expiring = Expiring {
+            sub: claims::Subject {
+                sub: "emu-1234".into(),
+            },
+            cnf: claims::Confirm::new(secret.public_key()),
+            nbf: claims::NotBefore { nbf: 1000 },
+            exp: claims::Expiration { exp: 2000 },
+        };
+        for (case, token) in [
+            (
+                "hardware",
+                cwt::issue(&permanent, &secret, CRYPTO_DOMAIN_DEVICE_ATTESTATION).unwrap(),
+            ),
+            (
+                "emulator",
+                cwt::issue(&expiring, &secret, CRYPTO_DOMAIN_DEVICE_ATTESTATION).unwrap(),
+            ),
+        ] {
+            let result = verify_self_signed(&token);
+            assert!(
+                matches!(
+                    &result,
+                    Err(Error::Cwt(cwt::Error::Cbor(cbor::Error::DecodeFailed(msg))))
+                        if msg == "missing required key 6"
+                ),
+                "{case}: {result:?}"
+            );
+        }
+    }
+
+    // Tests that an attestation is rejected when signed under another domain or
+    // with a corrupted signature, whether a hardware root, an emulator root or
+    // the device itself signed it.
+    #[test]
+    fn test_forged_signatures() {
+        // Signs the claims under the cloud attestation domain, and under the
+        // device one with a corrupted signature
+        fn forge(claims: &impl Encode, signer: &xdsa::SecretKey) -> [(&'static str, Vec<u8>); 2] {
+            let domain = cwt::issue(claims, signer, CRYPTO_DOMAIN_CLOUD_ATTESTATION).unwrap();
+            let mut signature =
+                cwt::issue(claims, signer, CRYPTO_DOMAIN_DEVICE_ATTESTATION).unwrap();
+            *signature.last_mut().unwrap() ^= 1;
+            [("domain", domain), ("signature", signature)]
+        }
+        let root = xdsa::SecretKey::generate();
+        let roots = [root.public_key()];
+        let secret = xdsa::SecretKey::generate();
+        let identity = secret.public_key();
+
+        for (case, token) in forge(&hardware_claims(identity.clone()), &root) {
+            let result = verify(&token, &roots, &[], None);
+            assert!(
+                matches!(result, Err(Error::Cwt(cwt::Error::Cose(_)))),
+                "{case}: {result:?}"
+            );
+        }
+        for (case, token) in forge(&emulator_claims(identity.clone(), 1000, 2000), &root) {
+            let result = verify(&token, &[], &roots, None);
+            assert!(
+                matches!(result, Err(Error::Cwt(cwt::Error::Cose(_)))),
+                "{case}: {result:?}"
+            );
+        }
+        for (case, token) in forge(&hardware_claims(identity.clone()), &secret) {
+            let result = verify_self_signed(&token);
+            assert!(
+                matches!(result, Err(Error::Cwt(cwt::Error::Cose(_)))),
+                "{case}: {result:?}"
+            );
+        }
+        for (case, token) in forge(&emulator_claims(identity, 1000, 2000), &secret) {
+            let result = verify_self_signed(&token);
+            assert!(
+                matches!(result, Err(Error::Cwt(cwt::Error::Cose(_)))),
+                "{case}: {result:?}"
+            );
+        }
     }
 
     // Tests that the length of an emulator attestation's validity period is
