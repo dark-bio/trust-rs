@@ -11,6 +11,7 @@
 
 pub mod cloud;
 pub mod device;
+pub mod notary;
 pub mod roots;
 
 /// The cryptography crate this one builds on, re-exported so consumers can
@@ -30,6 +31,11 @@ pub const CRYPTO_DOMAIN_DEVICE_ATTESTATION: &[u8] = b"device-attestation-v1";
 /// root to the attestation format so it cannot be replayed into other protocols
 /// using the same key.
 pub const CRYPTO_DOMAIN_CLOUD_ATTESTATION: &[u8] = b"cloud-attestation-v1";
+
+/// Domain separator of notary attestations, binding the signature of a notary
+/// root to the attestation format so it cannot be replayed into other protocols
+/// using the same key.
+pub const CRYPTO_DOMAIN_NOTARY_ATTESTATION: &[u8] = b"notary-attestation-v1";
 
 /// Longest validity period an emulator attestation may carry, bounding how
 /// long an emulated device stays attested.

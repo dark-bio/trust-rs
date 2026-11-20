@@ -5,17 +5,18 @@
 [![](https://github.com/dark-bio/trust-rs/workflows/tests/badge.svg)](https://github.com/dark-bio/trust-rs/actions/workflows/ci.yml)
 [![License: BSD-3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](https://github.com/dark-bio/trust-rs/blob/main/LICENSE)
 
-This crate holds the root pubkeys of the [Dark Bio](https://dark.bio) ecosystem and the attestation formats issued under them, so that any party can verify the identity of an Ark enclave or of the Dark Bio cloud with nothing beyond the public keys published in our [transparency reports repository](https://github.com/dark-bio/transparency).
+This crate holds the root pubkeys of the [Dark Bio](https://dark.bio) ecosystem and the attestation formats issued under them, so that any party can verify the identity of an Ark enclave, of the Dark Bio cloud or of its notary using the public keys published in our [transparency reports repository](https://github.com/dark-bio/transparency).
 
-The crate has three parts:
+The crate has four parts:
 
 - `roots` embeds the keys and knows every root by fingerprint.
 - `cloud` verifies the attestations of the Dark Bio rotating cloud keys.
 - `device` verifies the attestations of Arks, hardware and emulated alike.
+- `notary` verifies the attestations of the Dark Bio notary keys, which notarize Ark apps.
 
 ## Environments and features
 
-Devices and clouds belong to one of three environments: `release`, `staging` and `develop`, each with its own roots. Every environment can be named in every Rust feature combination, but its keys are only embedded when the crate feature of the same name is enabled. No environment feature is enabled by default. Verification uses the roots supplied by the caller.
+Devices, clouds and notary keys belong to one of three environments: `release`, `staging` and `develop`, each with its own roots. Every environment can be named in every Rust feature combination, but its keys are only embedded when the crate feature of the same name is enabled. No environment feature is enabled by default. Verification uses the roots supplied by the caller.
 
 ```toml
 [dependencies]
@@ -45,7 +46,7 @@ fn authenticate(attestation: &[u8], now: u64) -> Result<device::Device, darkbio_
 
 The result carries the identity key of the device, its serial, manufacturer, model and hardware revision, the time of issuance and, for emulated devices, the expiry. An attestation only proves that a root vouched for the key. The transport still has to prove that the peer holds it.
 
-A device that was never onboarded presents an attestation signed by its own identity key. `device::verify_self_signed` accepts such an attestation and returns nothing but that key. Whether to talk to such a device is up to the application.
+A device that was never onboarded presents an attestation signed by its own identity key. `device::verify_self_signed` accepts such an attestation and returns only that key. Whether to talk to such a device is up to the application.
 
 ## Verifying the cloud
 
@@ -65,9 +66,27 @@ fn cloud_signer(attestation: &[u8], now: u64) -> Result<cloud::SignerClaims, Box
 }
 ```
 
+## Verifying the notary
+
+The notary root of an environment attests the keys that notarize Ark apps. `notary::verify` takes that root and returns the claims, which name the key and the time it starts notarizing. A newer notary key starts later, so a caller refuses an attestation that starts before the key it holds.
+
+```rust
+use darkbio_trust::{Environment, notary, roots};
+
+fn newer_notary(attestation: &[u8], held: u64, now: u64) -> Result<notary::NotaryClaims, Box<dyn std::error::Error>> {
+    let root = roots::notary(Environment::Release).ok_or("release roots are not embedded")?;
+
+    let claims = notary::verify(attestation, root, Some(now))?;
+    if claims.nbf.nbf < held {
+        return Err("key starts before the one held".into());
+    }
+    Ok(claims)
+}
+```
+
 ## Validity footnotes
 
-Verification always checks the signature, the domain and the shape of the claims. Emulator attestations may be valid for at most 30 days; cloud attestations for at most 90 days; hardware attestations never expire. With a time specified, the attestation must also be valid at that moment. Without one, the clock check is skipped. `device::verify_self_signed` ignores the timestamps altogether, since a self-asserted lifetime carries no authority.
+Verification always checks the signature, the domain and the shape of the claims. Emulator attestations may be valid for at most 30 days; cloud attestations for at most 90 days; hardware and notary attestations never expire. With a time specified, the attestation must also be valid at that moment. Without one, the clock check is skipped. `device::verify_self_signed` ignores the timestamps altogether, since a self-asserted lifetime carries no authority.
 
 ## Naming a signer
 

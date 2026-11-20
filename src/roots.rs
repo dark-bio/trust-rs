@@ -44,23 +44,30 @@ pub struct Series {
 
 /// Keyset is the set of roots of trusts of an environment.
 struct Keyset {
-    series: Vec<Series>,            // Hardware series, along with their keys
-    hardware: Vec<xdsa::PublicKey>, // Hardware device roots, the device root of every series
-    emulator: Vec<xdsa::PublicKey>, // Emulator roots attesting the emulated devices
-    cloud: Option<xdsa::PublicKey>, // Cloud root attesting the rotating cloud identities
+    series: Vec<Series>,             // Hardware series, along with their keys
+    hardware: Vec<xdsa::PublicKey>,  // Hardware device roots, the device root of every series
+    emulator: Vec<xdsa::PublicKey>,  // Emulator roots attesting the emulated devices
+    cloud: Option<xdsa::PublicKey>,  // Cloud root attesting the rotating cloud identities
+    notary: Option<xdsa::PublicKey>, // Notary root attesting the notary keys
 }
 
 impl Keyset {
     /// Assembles the keyset of an environment out of its series and roots, the
     /// hardware device roots being those of the series.
     #[cfg(any(feature = "release", feature = "staging", feature = "develop"))]
-    fn new(series: Vec<Series>, emulator: Vec<xdsa::PublicKey>, cloud: xdsa::PublicKey) -> Self {
+    fn new(
+        series: Vec<Series>,
+        emulator: Vec<xdsa::PublicKey>,
+        cloud: xdsa::PublicKey,
+        notary: xdsa::PublicKey,
+    ) -> Self {
         let hardware = series.iter().map(|s| s.device_root.clone()).collect();
         Self {
             series,
             hardware,
             emulator,
             cloud: Some(cloud),
+            notary: Some(notary),
         }
     }
 }
@@ -72,6 +79,7 @@ static EMPTY: Keyset = Keyset {
     hardware: Vec::new(),
     emulator: Vec::new(),
     cloud: None,
+    notary: None,
 };
 
 /// Parses an embedded PEM public key, panicking on failure as the keys are
@@ -127,6 +135,7 @@ static RELEASE: LazyLock<Keyset> = LazyLock::new(|| {
             "../roots/deviceattest-emulator-release.xdsa.pub"
         ))],
         parse(include_str!("../roots/cloudattest-release.xdsa.pub")),
+        parse(include_str!("../roots/notaryattest-release.xdsa.pub")),
     )
 });
 
@@ -147,6 +156,9 @@ static STAGING: LazyLock<Keyset> = LazyLock::new(|| {
         parse(include_str!(
             "../roots/internal/cloudattest-staging.xdsa.pub"
         )),
+        parse(include_str!(
+            "../roots/internal/notaryattest-staging.xdsa.pub"
+        )),
     )
 });
 
@@ -166,6 +178,9 @@ static DEVELOP: LazyLock<Keyset> = LazyLock::new(|| {
         ))],
         parse(include_str!(
             "../roots/internal/cloudattest-develop.xdsa.pub"
+        )),
+        parse(include_str!(
+            "../roots/internal/notaryattest-develop.xdsa.pub"
         )),
     )
 });
@@ -216,6 +231,12 @@ pub fn cloud(environment: Environment) -> Option<&'static xdsa::PublicKey> {
     keyset(environment).cloud.as_ref()
 }
 
+/// Root attesting the notary keys of an environment. Returns `None` when the
+/// environment's keys are not embedded.
+pub fn notary(environment: Environment) -> Option<&'static xdsa::PublicKey> {
+    keyset(environment).notary.as_ref()
+}
+
 /// Role is what a root signs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Role {
@@ -229,6 +250,8 @@ pub enum Role {
     EmulatorAttester,
     /// Signs the attestations of the rotating cloud identities.
     CloudAttester,
+    /// Signs the attestations of the notary keys.
+    NotaryAttester,
 }
 
 impl fmt::Display for Role {
@@ -239,6 +262,7 @@ impl fmt::Display for Role {
             Role::FirmwareUpdate => "firmware update root",
             Role::EmulatorAttester => "emulator attester",
             Role::CloudAttester => "cloud attester",
+            Role::NotaryAttester => "notary attester",
         })
     }
 }
@@ -336,6 +360,10 @@ const KNOWN: &[(&str, Root)] = &[
         known(Environment::Release, Role::CloudAttester, None),
     ),
     (
+        "5ecd4b694bf41564d9b2b0590a0f561660fe7815d266d6f26241f5f0fdb72681",
+        known(Environment::Release, Role::NotaryAttester, None),
+    ),
+    (
         "7d725c5cb3f80ef4e17bb98ea1f14683714a7eaffaa78cded17ff0e2c0c96ffa",
         known(
             Environment::Staging,
@@ -360,6 +388,10 @@ const KNOWN: &[(&str, Root)] = &[
         known(Environment::Staging, Role::CloudAttester, None),
     ),
     (
+        "58ae1f056fb266a43d0b66b0840b5c4ae11cef3b23ce87906059d5d6e5385660",
+        known(Environment::Staging, Role::NotaryAttester, None),
+    ),
+    (
         "456df8b670cbe2c1c95368f2678ddf66671826542d742cfb5aee2f30e194b2ed",
         known(
             Environment::Develop,
@@ -382,6 +414,10 @@ const KNOWN: &[(&str, Root)] = &[
     (
         "9dfa577f0938f11f9df9a5eadcdc8e57353702dca6d23291cf5cc71a403d67a8",
         known(Environment::Develop, Role::CloudAttester, None),
+    ),
+    (
+        "74af3bab86c3bd3264a52d474d2c423dbaea823bbbd2f41545e463f891663f9e",
+        known(Environment::Develop, Role::NotaryAttester, None),
     ),
     (
         "684f319c13b255356b369da93654a113349cc5d4f7147c9560f6cdf4432cc5d6",
@@ -497,6 +533,7 @@ mod tests {
             }
             assert_eq!(emulator(environment).len(), 1, "{environment}");
             assert!(cloud(environment).is_some(), "{environment}");
+            assert!(notary(environment).is_some(), "{environment}");
         }
     }
 
@@ -509,6 +546,7 @@ mod tests {
             assert!(hardware(environment).is_empty(), "{environment}");
             assert!(emulator(environment).is_empty(), "{environment}");
             assert!(cloud(environment).is_none(), "{environment}");
+            assert!(notary(environment).is_none(), "{environment}");
         }
     }
 
@@ -555,8 +593,13 @@ mod tests {
                 Some(known(environment, Role::CloudAttester, None)),
                 "{environment}"
             );
+            assert_eq!(
+                identify(&notary(environment).unwrap().fingerprint()),
+                Some(known(environment, Role::NotaryAttester, None)),
+                "{environment}"
+            );
         }
-        assert_eq!(KNOWN.len(), 21, "root count mismatch");
+        assert_eq!(KNOWN.len(), 24, "root count mismatch");
 
         let stranger = xdsa::SecretKey::generate().public_key();
         assert_eq!(
@@ -600,6 +643,8 @@ mod tests {
         );
         let root = known(Environment::Develop, Role::CloudAttester, None);
         assert_eq!(root.to_string(), "develop cloud attester");
+        let root = known(Environment::Release, Role::NotaryAttester, None);
+        assert_eq!(root.to_string(), "release notary attester");
     }
 
     // Fingerprint lookup works without embedded keys and separates algorithms.
@@ -623,7 +668,7 @@ mod tests {
             assert!(fingerprints.insert(bytes), "duplicate fingerprint");
         }
         assert_eq!(rsa_count, 5);
-        assert_eq!(fingerprints.len(), 21);
+        assert_eq!(fingerprints.len(), 24);
         assert_eq!(identify(&rsa::Fingerprint::from_bytes(&[0; 32])), None);
     }
 }
