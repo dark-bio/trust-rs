@@ -20,7 +20,7 @@ Devices, clouds and notary keys belong to one of three environments: `release`, 
 
 ```toml
 [dependencies]
-darkbio-trust = { version = "0.7", features = ["release"] }
+darkbio-trust = { version = "0.8", features = ["release"] }
 ```
 
 Hardware and emulated Arks live in separate realms. Hardware devices are attested once at manufacturing by the device root of their series and never expire. Emulated devices are attested online by the emulator root and always expire. The two realms never share trust.
